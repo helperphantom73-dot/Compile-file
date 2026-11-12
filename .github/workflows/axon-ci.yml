@@ -1,0 +1,131 @@
+name: Axon Enterprise CI/CD Pipeline
+
+# =====================================================================
+# تریگرها (Triggers): زمان‌هایی که این خط تولید اجرا می‌شود
+# =====================================================================
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*' # برای زمان‌هایی که تگ نسخه (مثلاً v1.0.0) می‌زنید
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # امکان اجرای دستی از تب Actions در گیت‌هاب
+
+# =====================================================================
+# تنظیمات پایه و متغیرهای محیطی
+# =====================================================================
+env:
+  PYTHON_VERSION: '3.11'
+  CC: gcc
+
+jobs:
+  # =====================================================================
+  # مرحله ۱: ساخت و تست (Build & Test)
+  # =====================================================================
+  build-and-test:
+    name: Build & Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - name: 📥 دریافت کدهای مخزن (Checkout)
+      uses: actions/checkout@v4
+
+    - name: 🐍 نصب و راه‌اندازی پایتون
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: 🛠️ نصب پیش‌نیازهای سیستم (GCC, Make, LLVM)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc make libomp-dev
+
+    - name: 📦 نصب وابستگی‌های پایتون
+      run: |
+        python -m pip install --upgrade pip
+        pip install llvmlite
+
+    - name: 🚀 اجرای اسکریپت Axon (تولید، ساخت و تست)
+      run: |
+        python3 axon_bundle.py
+
+    - name: 📤 آپلود فایل‌های باینری تولید شده (Artifacts)
+      uses: actions/upload-artifact@v4
+      with:
+        name: axon-binaries-py${{ matrix.python-version }}
+        path: |
+          *.bin
+          !test_*.bin
+        retention-days: 7
+
+  # =====================================================================
+  # مرحله ۲: کراس کامپایل برای معماری ARM64 (اختیاری - برای سرورها/موبایل)
+  # =====================================================================
+  cross-compile-arm64:
+    name: Cross-Compile for ARM64 (aarch64)
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 دریافت کدهای مخزن
+      uses: actions/checkout@v4
+
+    - name: 🐍 نصب پایتون
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 🛠️ نصب کامپایلر متقابل (Cross-Compiler)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+    - name: 📦 نصب llvmlite
+      run: pip install llvmlite
+
+    - name: 🏗️ ساخت رانتایم C برای ARM64
+      run: |
+        make clean || true
+        make runtime CC=aarch64-linux-gnu-gcc
+
+    - name: 🚀 کامپایل مدل برای ARM64
+      run: |
+        python3 -m axon.cli build examples/transformer_block.axon --target aarch64-linux-gnu -o transformer_arm64.bin
+
+    - name: 📤 آپلود باینری ARM64
+      uses: actions/upload-artifact@v4
+      with:
+        name: axon-arm64-binary
+        path: transformer_arm64.bin
+
+  # =====================================================================
+  # مرحله ۳: انتشار خودکار (Release) - فقط زمانی که تگ می‌زنید
+  # =====================================================================
+  release:
+    name: Create GitHub Release
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v') # فقط وقتی تگ با v شروع شود
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 دریافت فایل‌های باینری تولید شده
+      uses: actions/download-artifact@v4
+      with:
+        name: axon-binaries-py3.11
+        path: ./binaries
+
+    - name: 🏷️ ایجاد انتشار در گیت‌هاب (Release)
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          ./binaries/*.bin
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true
