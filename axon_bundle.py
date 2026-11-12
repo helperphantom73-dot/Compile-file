@@ -768,12 +768,20 @@ class FusionPass:
         changed = True
         while changed:
             changed = False
+
+            # Priority 1: Look for RELU / GELU (MatMul + Add + Act)
             for node in graph.nodes_in_topo_order():
                 if node.op in (OpKind.RELU, OpKind.GELU):
                     if self._try_fuse_activation(node, graph) is not None:
                         changed = True
                         break
-                elif node.op == OpKind.ADD:
+
+            if changed:
+                continue
+
+            # Priority 2: Look for ADD (MatMul + Add)
+            for node in graph.nodes_in_topo_order():
+                if node.op == OpKind.ADD:
                     mm_node = self._parent_op(node, OpKind.MATMUL, graph)
                     if mm_node and self._uses(mm_node, graph) == 1:
                         bias_inp = self._other_input(node, mm_node.id)
@@ -1003,7 +1011,7 @@ def _count_flops(graph: Graph) -> int:
 
 class LLVMBackend:
     def __init__(self, module_name: str = "axon_module", target_triple: str = ""):
-        llvm.initialize()
+        # llvm.initialize() -> Removed to fix deprecation error in GitHub Actions
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
         self.module = ir.Module(name=module_name)
