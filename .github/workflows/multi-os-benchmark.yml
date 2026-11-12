@@ -1,0 +1,122 @@
+name: Multi-OS Axon Benchmark
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # امکان اجرای دستی
+
+jobs:
+  benchmark:
+    name: Benchmark on ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true # جلوگیری از متوقف شدن کل ورک‌فلو در صورت خطای یک سیستم‌عامل
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: "Linux (x86_64)"
+            shell: bash
+          - os: ubuntu-24.04-arm  # سرورهای ARM گیت‌هاب
+            label: "Linux (ARM64)"
+            shell: bash
+          - os: macos-latest
+            label: "macOS (Apple Silicon)"
+            shell: bash
+          - os: windows-latest
+            label: "Windows (x86_64)"
+            shell: msys2 {0}
+
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v4
+
+    # -----------------------------------------------------------
+    # تنظیمات مخصوص هر سیستم‌عامل
+    # -----------------------------------------------------------
+    - name: 🐍 Setup Python (Linux & macOS)
+      if: runner.os != 'Windows'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: 🛠️ Setup MSYS2 (Windows Only)
+      if: runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-gcc
+          make
+          mingw-w64-x86_64-python
+          mingw-w64-x86_64-python-pip
+
+    - name: ⚙️ Install Dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libomp-dev
+
+    - name: ⚙️ Install Dependencies (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install libomp
+        # اصلاح سینتکس اسمبلی برای مک (تبدیل از ELF به Mach-O)
+        sed -i '' 's/\.section \.axon_weights, "a", @progbits/.section __DATA,__data/g' axon_bundle.py
+        sed -i '' 's/\.align 16/.align 4/g' axon_bundle.py
+        sed -i '' 's/\.global/\.globl/g' axon_bundle.py
+        sed -i '' 's/__axon_weights_start/___axon_weights_start/g' axon_bundle.py
+        sed -i '' 's/__axon_weights_end/___axon_weights_end/g' axon_bundle.py
+
+    # -----------------------------------------------------------
+    # نصب وابستگی‌ها و اجرای بنچمارک
+    # -----------------------------------------------------------
+    - name: 📦 Install Python Packages (Linux & macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install llvmlite
+
+    - name: 🚀 Run Axon Benchmark (Linux & macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        python3 axon_bundle.py | tee benchmark_output.txt
+
+    - name: 📦 Install Python Packages (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install llvmlite
+
+    - name: 🚀 Run Axon Benchmark (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
+        python axon_bundle.py | tee benchmark_output.txt
+
+    # -----------------------------------------------------------
+    # استخراج و نمایش نتایج
+    # -----------------------------------------------------------
+    - name: 📊 Extract & Display Benchmark Results
+      shell: ${{ matrix.shell }}
+      run: |
+        echo "### 🏎️ Benchmark Results: ${{ matrix.label }}" >> $GITHUB_STEP_SUMMARY
+        echo '```text' >> $GITHUB_STEP_SUMMARY
+        
+        # استخراج خط بنچمارک از خروجی اجرای اسکریپت
+        grep "\[AXON BENCHMARK\]" benchmark_output.txt >> $GITHUB_STEP_SUMMARY || echo "Benchmark failed or not found for this OS." >> $GITHUB_STEP_SUMMARY
+        
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: 📤 Upload Generated Binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: axon-binaries-${{ matrix.os }}
+        path: |
+          *.bin
+          !test_*.bin
