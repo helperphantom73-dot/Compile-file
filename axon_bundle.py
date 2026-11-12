@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Axon Enterprise v1.0 - All-in-One Repository Generator, Builder & Test Runner.
-Adds: SystemInspector, ModelConverter, CLI Subcommands (doctor/setup, convert, build, run),
-      dynamic hardware-optimized CFLAGS, and auto-model generation.
+Adds: SystemInspector, ModelConverter, CLI Subcommands, and dynamic CFLAGS.
 
 Run: python3 axon_bundle.py
 """
@@ -1134,11 +1133,13 @@ class RuntimeLinker:
             cc = f"{target}-gcc"
         else:
             cc = os.environ.get("CC", "cc")
-        cmd = [cc, "-O3", "-no-pie", "-fopenmp", "-ffast-math"] + objects
+        cmd = [cc, "-O3", "-fopenmp", "-ffast-math"] + objects
         if static_runtime: cmd.append(static_runtime)
         cmd.extend(["-lm", "-lpthread", "-o", output_bin])
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0: raise CodegenError(f"Linker error: {res.stderr}")
+        if os.path.exists(output_bin):
+            os.chmod(output_bin, 0o755)
 """
 
 FILES["axon/baker/__init__.py"] = """from .weight_pack import AxonBlobPacker
@@ -2339,9 +2340,11 @@ def main():
     print("  -> Runtime compiled successfully.")
 
     print("\n[4/8] Running test suite...")
-    test_res = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
+    test_res = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"], capture_output=True, text=True)
     if test_res.returncode != 0:
         print("  -> Some tests failed!", file=sys.stderr)
+        print(test_res.stderr, file=sys.stderr)
+        print(test_res.stdout, file=sys.stderr)
         sys.exit(1)
     print("  -> All test suites passed cleanly.")
 
